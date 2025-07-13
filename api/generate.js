@@ -1,5 +1,10 @@
-// generate.js
 import { OpenAI } from "openai";
+
+export const config = {
+  api: {
+    bodyParser: true,
+  },
+};
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -44,7 +49,6 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
 
     const content = chatResponse.choices[0].message.content;
 
-    // Probeer JSON te parsen
     try {
       const parsed = JSON.parse(content);
       return res.status(200).json(parsed);
@@ -52,7 +56,7 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
       return res.status(500).json({ error: "Kon JSON niet parsen", content });
     }
   } catch (apiError) {
-  console.error("OpenAI fout:", apiError);
-  return res.status(500).json({ error: "OpenAI API-fout", detail: apiError.message });
-}
+    console.error("OpenAI fout:", apiError);
+    return res.status(500).json({ error: "OpenAI API-fout", detail: apiError.message });
+  }
 }
