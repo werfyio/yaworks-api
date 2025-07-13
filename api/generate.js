@@ -52,6 +52,7 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
       return res.status(500).json({ error: "Kon JSON niet parsen", content });
     }
   } catch (apiError) {
-    return res.status(500).json({ error: "OpenAI API-fout", detail: apiError.message });
-  }
+  console.error("OpenAI fout:", apiError);
+  return res.status(500).json({ error: "OpenAI API-fout", detail: apiError.message });
+}
 }
