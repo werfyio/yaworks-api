@@ -1,4 +1,14 @@
 // pages/api/generate.js
+import { OpenAI } from "openai";
+
+export const config = {
+  api: {
+    bodyParser: true,
+  },
+};
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
@@ -6,12 +16,11 @@ export default async function handler(req, res) {
 
   let bodyData = req.body;
 
-  // Als body een string is, probeer hem te parsen
   if (typeof bodyData === "string") {
     try {
       bodyData = JSON.parse(bodyData);
     } catch {
-      // Laat als string staan als het geen geldige JSON is
+      // laat hem als string staan
     }
   }
 
@@ -20,19 +29,17 @@ export default async function handler(req, res) {
   if (!profiel || typeof profiel !== "string" || !profiel.trim()) {
     return res.status(400).json({
       error: "Ongeldig of ontbrekend profiel.",
-      received_body: bodyData,
     });
   }
 
-  // Prompt met jouw volledige instructies
+  // === Lange prompt voor strikte JSON extractie ===
   const prompt = `
 ROL & DOEL
 Je bent een zeer strikte extractor. Analyseer de kandidaat-informatie (CV, LinkedIn-profiel, notities). Gebruik uitsluitend informatie die expliciet in de tekst staat. Verzin niets. Als informatie ontbreekt, volg de fallback-regels. Geef uitsluitend geldige JSON volgens het exacte schema onder “JSON-schema”. Geen uitleg, geen extra tekst.
 
 GDPR-regel: Nooit bedrijfsnamen opnemen; gebruik generieke omschrijvingen zoals “grote telecomprovider” of “publieke sectororganisatie”.
 
-BESLISREGELS PER VELD
-[ ... hier laat je alle beslisregels uit je prompt volledig staan ... ]
+${/* Hier volgen je volledige beslisregels */""}
 
 JSON-SCHEMA
 {
@@ -126,58 +133,37 @@ ${profiel}
 
 LET OP:
 Output is alleen de json {} Niks ervoor of erna.
-haal dingen als \`\`\`json en  \`\`\` weg alleen { en wat er tussen zit en }.
+Haal dingen als \`\`\`json en  \`\`\` weg, alleen { en wat er tussen zit en }.
 Check goed dat alles is ingevuld. Als je klaar bent loop alles na en check of je alle info hebt verstrekt.
-  `.trim();
+`.trim();
 
   try {
-    const completion = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: "Je bent een zeer strikte data-extractor." },
-          { role: "user", content: prompt },
-        ],
-        max_tokens: 2000,
-        temperature: 0.2,
-      }),
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Je bent een strikte JSON-profiel extractor." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 2000,
     });
 
-    const completionData = await completion.json();
+    const raw = completion.choices?.[0]?.message?.content ?? "";
 
-    if (!completion.ok) {
-      return res.status(500).json({
-        error: "OpenAI API-fout",
-        detail: completionData,
-      });
-    }
+    // Strip eventueel code fences
+    const cleaned = raw.replace(/```json|```/g, "").trim();
 
-    let text = completionData.choices?.[0]?.message?.content?.trim() || "";
-
-    // Strip eventuele ```json fences
-    if (text.startsWith("```")) {
-      text = text.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-    }
-
+    // Probeer JSON te parsen, anders stuur tekst terug
     try {
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(cleaned);
       return res.status(200).json(parsed);
     } catch {
-      return res.status(200).json({
-        ok: true,
-        raw_text: text,
-        note: "Kon geen geldige JSON parsen.",
-      });
+      return res.status(200).json({ ok: true, text: cleaned });
     }
   } catch (err) {
     return res.status(500).json({
-      error: "Serverfout",
-      detail: err.message,
+      error: "OpenAI API-fout",
+      detail: err?.message || String(err),
     });
   }
 }
