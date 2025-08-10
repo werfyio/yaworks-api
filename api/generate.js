@@ -13,22 +13,44 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  let { profiel } = req.body;
+  let profiel = req.body.profiel;
 
-  if (!profiel || typeof profiel !== "string") {
-    return res.status(400).json({ error: "Ongeldig of ontbrekend profiel." });
+  // 1️⃣ Als de body als string is aangekomen (soms doet Glide dat)
+  if (!profiel && typeof req.body === "string") {
+    try {
+      const parsedBody = JSON.parse(req.body);
+      profiel = parsedBody.profiel;
+    } catch (e) {
+      console.warn("Kon body niet parsen als JSON-string:", e);
+    }
   }
 
-  // Als profiel een string van JSON is, parse het
-  try {
-    // Haalt eventueel omringende quotes weg
+  // 2️⃣ Als de body maar één veld heeft (bijvoorbeeld {"{profieltekst}":""})
+  if (!profiel && typeof req.body === "object" && Object.keys(req.body).length === 1) {
+    const firstValue = Object.values(req.body)[0];
+    if (typeof firstValue === "string" && firstValue.trim() !== "") {
+      profiel = firstValue;
+    }
+  }
+
+  // 3️⃣ Als het profiel een JSON-string is met omringende quotes
+  if (typeof profiel === "string") {
     if (profiel.startsWith('"') && profiel.endsWith('"')) {
       profiel = profiel.slice(1, -1);
     }
-    // Zet escape sequences om
-    profiel = profiel.replace(/\\"/g, '"');
-  } catch (e) {
-    console.error("Kon profiel niet opschonen:", e);
+    // Vervang escaped quotes en newline escapes
+    profiel = profiel.replace(/\\"/g, '"').replace(/\\n/g, "\n");
+  }
+
+  // 4️⃣ Laat zien wat we hebben ontvangen (handig voor debuggen)
+  console.log("Profiel ontvangen:", profiel?.substring(0, 100) + "...");
+
+  // 5️⃣ Stop als we echt niets bruikbaars hebben
+  if (!profiel || typeof profiel !== "string" || profiel.trim() === "") {
+    return res.status(400).json({ 
+      error: "Ongeldig of ontbrekend profiel.", 
+      received: req.body 
+    });
   }
 
   const prompt = `
