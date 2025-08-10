@@ -138,7 +138,7 @@ Check goed dat alles is ingevuld. Als je klaar bent loop alles na en check of je
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-5-mini",
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: "Je bent een zeer strikte data-extractor." },
           { role: "user", content: prompt },
