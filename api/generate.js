@@ -47,15 +47,14 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
   try {
     // NIEUWE MODELLEN → Responses API
     if (NEEDS_RESPONSES_API(model)) {
-      const resp = await openai.responses.create({
-        model,
-        instructions: "Je bent een technische recruiter bij YaWorks.",
-        input: prompt,
-        temperature,
-        // vertaal max_tokens -> max_completion_tokens indien nodig
-        max_completion_tokens: max_completion_tokens ?? max_tokens ?? 400,
-        stream: false
-      });
+     const resp = await openai.responses.create({
+  model,
+  instructions: "Je bent een technische recruiter bij YaWorks.",
+  input: prompt,
+  temperature,
+  max_output_tokens: max_completion_tokens ?? max_tokens ?? 400,
+  stream: false
+});
 
       const text =
         resp.output_text ??
