@@ -1,9 +1,8 @@
-// api/generate.js
 import { OpenAI } from "openai";
 
 export const config = {
   api: {
-    bodyParser: true, // Laat Vercel de JSON body parsen
+    bodyParser: true,
   },
 };
 
@@ -14,14 +13,24 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { profiel } = req.body;
+  let { profiel } = req.body;
 
-  // Controleer of profiel geldig is
-  if (!profiel || typeof profiel !== "string" || profiel.trim() === "") {
+  if (!profiel || typeof profiel !== "string") {
     return res.status(400).json({ error: "Ongeldig of ontbrekend profiel." });
   }
 
-  // Maak de prompt voor GPT
+  // Als profiel een string van JSON is, parse het
+  try {
+    // Haalt eventueel omringende quotes weg
+    if (profiel.startsWith('"') && profiel.endsWith('"')) {
+      profiel = profiel.slice(1, -1);
+    }
+    // Zet escape sequences om
+    profiel = profiel.replace(/\\"/g, '"');
+  } catch (e) {
+    console.error("Kon profiel niet opschonen:", e);
+  }
+
   const prompt = `
 Je bent een technisch recruiter bij YaWorks. Analyseer dit profiel:
 
@@ -38,28 +47,25 @@ Geef output in JSON met de volgende velden:
 - samenvatting (1 zin)
 - bericht (max 6 regels, eindigend op: Laat maar weten als je benieuwd bent hoe dat er voor jou uitziet. Kijk anders even op www.yaworkscareers.com.)
 
-Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.
-`;
+Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
 
   try {
-    // Vraag aan OpenAI
     const chatResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // Licht en snel model
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: "Je bent een technische recruiter bij YaWorks." },
         { role: "user", content: prompt }
       ],
-      temperature: 0.4
+      temperature: 0.4,
+      max_output_tokens: 500
     });
 
     const content = chatResponse.choices[0].message.content;
 
-    // Probeer GPT-output als JSON te parsen
     try {
       const parsed = JSON.parse(content);
       return res.status(200).json(parsed);
     } catch (jsonError) {
-      // Als JSON niet klopt, stuur originele GPT-output mee
       return res.status(500).json({ error: "Kon JSON niet parsen", content });
     }
   } catch (apiError) {
