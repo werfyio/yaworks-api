@@ -1,17 +1,15 @@
-// pages/api/generate.js  (of api/generate.js)
-import { OpenAI } from "openai";
+// pages/api/generate.js
+import OpenAI from "openai";
 
-export const config = {
-  api: {
-    bodyParser: true, // laat Vercel JSON parsen; we vangen vreemde gevallen zelf af
-  },
-};
+export const config = { api: { bodyParser: true } };
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Helpers
-const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+// Nieuwe modellen gebruiken de Responses API
+const NEEDS_RESPONSES_API = (model = "") =>
+  /^(gpt-5|gpt-4\.1|gpt-4o|o\d|o[34]-mini)/i.test(model);
 
+function safeJsonParse(s) { try { return JSON.parse(s); } catch { return null; } }
 function stripCodeFence(s = "") {
   let t = String(s).trim();
   if (t.startsWith("```")) {
@@ -20,114 +18,41 @@ function stripCodeFence(s = "") {
   return t;
 }
 
-// Normaliseer willekeurige Glide/Client payloads naar { profiel: string }
-function normalizeBody(req) {
-  let raw = req.body;
-
-  // Log raw binnenkomende body
-  console.log("Raw body (typeof):", typeof raw);
-  console.log("Raw body (value):", raw);
-
-  // Buffers → string
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(raw)) {
-    raw = raw.toString("utf8");
-  }
-
-  // string → probeer JSON, anders als platte tekst interpreteren
-  if (typeof raw === "string") {
-    const trimmed = raw.trim();
-    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("\"{") && trimmed.endsWith("}\""))) {
-      try {
-        raw = JSON.parse(trimmed);
-      } catch {
-        // als het echt niet te parsen is, stuur als platte tekst
-        return { profiel: trimmed };
-      }
-    } else {
-      return { profiel: trimmed };
-    }
-  }
-
-  // object
-  if (isPlainObject(raw)) {
-    // ideale pad
-    if (typeof raw.profiel === "string" && raw.profiel.trim() !== "") {
-      return { profiel: raw.profiel };
-    }
-
-    // body heeft 1 key met een string (soms JSON-als-string)
-    const keys = Object.keys(raw);
-    if (keys.length === 1) {
-      const val = raw[keys[0]];
-      if (typeof val === "string") {
-        const v = val.trim();
-        if (v.startsWith("{") && v.endsWith("}")) {
-          try {
-            const inner = JSON.parse(v);
-            if (typeof inner.profiel === "string" && inner.profiel.trim() !== "") {
-              return { profiel: inner.profiel };
-            }
-          } catch {
-            return { profiel: v };
-          }
-        } else {
-          return { profiel: v };
-        }
-      }
-    }
-
-    // laatste redmiddel: probeer eerste stringwaarde te pakken
-    for (const k of keys) {
-      if (typeof raw[k] === "string" && raw[k].trim() !== "") {
-        return { profiel: raw[k] };
-      }
-    }
-  }
-
-  // niets bruikbaars
-  return { profiel: "" };
-}
-
 export default async function handler(req, res) {
+  // (optioneel) CORS preflight
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    return res.status(200).end();
+  }
+
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const debug = req.query?.debug === "1" || req.headers["x-debug"] === "1";
+  try {
+    // Body kan string of JSON zijn → beide ondersteunen
+    const raw = req.body;
+    const body = typeof raw === "string" ? (safeJsonParse(raw) ?? raw) : (raw || {});
 
-  // Normaliseer inkomende body naar { profiel }
-  const norm = normalizeBody(req);
+    const model = (typeof body === "object" ? body.model : undefined) ?? "gpt-4o-mini";
+    const temperature = (typeof body === "object" ? body.temperature : undefined) ?? 0.4;
+    const max_tokens = (typeof body === "object" ? body.max_tokens : undefined);
 
-  // Optionele extra opschoning: buitenste quotes weg, escaped quotes/newlines normaliseren
-  let profiel = norm.profiel;
-  if (typeof profiel === "string") {
-    const p = profiel.trim();
-    if (p.startsWith('"') && p.endsWith('"')) {
-      profiel = p.slice(1, -1);
+    let profiel = null;
+    if (typeof body === "string") {
+      profiel = body;
+    } else {
+      // accepteer zowel 'profiel' als 'Profiel'
+      profiel = body.profiel ?? body.Profiel ?? null;
     }
-    profiel = profiel.replace(/\\"/g, '"').replace(/\\n/g, "\n");
-  }
 
-  // Debug-echo (handig voor Glide)
-  if (debug) {
-    return res.status(200).json({
-      debug: true,
-      normalized: { profiel },
-      typeof_body: typeof req.body,
-      received_body: req.body,
-      headers: req.headers,
-    });
-  }
+    if (!profiel || typeof profiel !== "string" || !profiel.trim()) {
+      return res.status(400).json({ error: "Ongeldig of ontbrekend profiel." });
+    }
 
-  if (!profiel || typeof profiel !== "string" || !profiel.trim()) {
-    return res.status(400).json({
-      error: "Ongeldig of ontbrekend profiel.",
-      hint: "Zorg dat je in Glide de key 'profiel' meestuurt, of stuur pure tekst; dit script pakt beide.",
-      received_preview: typeof req.body === "string" ? req.body.slice(0, 200) : req.body,
-    });
-  }
-
-  const prompt = `
+    const prompt = `
 Je bent een technisch recruiter bij YaWorks. Analyseer dit profiel:
 
 """
@@ -144,39 +69,53 @@ Geef output in JSON met de volgende velden:
 - bericht (max 6 regels, eindigend op: Laat maar weten als je benieuwd bent hoe dat er voor jou uitziet. Kijk anders even op www.yaworkscareers.com.)
 
 Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg en zonder codeblokken.
-`.trim();
+`;
 
-  try {
-    // Chat Completions (werkt prima met gpt-4o-mini)
+    // NIEUWE MODELLEN → Responses API
+    if (NEEDS_RESPONSES_API(model)) {
+      const resp = await openai.responses.create({
+        model,
+        instructions: "Je bent een technische recruiter bij YaWorks.",
+        input: prompt,
+        temperature,
+        // juiste parameternaam in Responses API
+        max_output_tokens: typeof max_tokens === "number" ? max_tokens : 400,
+        stream: false
+      });
+
+      const text =
+        resp.output_text ??
+        resp.output?.[0]?.content?.find?.(c => c.type === "output_text")?.text ??
+        "";
+
+      const cleaned = stripCodeFence(text);
+      try {
+        return res.status(200).json(JSON.parse(cleaned));
+      } catch {
+        return res.status(200).json({ ok: true, text: cleaned, note: "Output was geen geldige JSON." });
+      }
+    }
+
+    // OUDE MODELLEN → Chat Completions API
     const chat = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model,
       messages: [
         { role: "system", content: "Je bent een technische recruiter bij YaWorks." },
-        { role: "user", content: prompt },
+        { role: "user", content: prompt }
       ],
-      temperature: 0.4,
-      max_tokens: 500,
+      temperature,
+      ...(typeof max_tokens === "number" ? { max_tokens } : {})
     });
 
-    const raw = chat.choices?.[0]?.message?.content ?? "";
-    const cleaned = stripCodeFence(raw);
-
+    const content = chat.choices?.[0]?.message?.content ?? "";
+    const cleaned = stripCodeFence(content);
     try {
-      const parsed = JSON.parse(cleaned);
-      return res.status(200).json(parsed);
+      return res.status(200).json(JSON.parse(cleaned));
     } catch {
-      // Niet helemaal zuivere JSON? Geef de tekst terug i.p.v. 500
-      return res.status(200).json({
-        ok: true,
-        text: cleaned,
-        note: "Output was geen geldige JSON; text teruggegeven voor debug.",
-      });
+      return res.status(200).json({ ok: true, text: cleaned, note: "Output was geen geldige JSON." });
     }
-  } catch (err) {
-    console.error("OpenAI fout:", err);
-    return res.status(500).json({
-      error: "OpenAI API-fout",
-      detail: err?.message || String(err),
-    });
+  } catch (e) {
+    console.error("OpenAI fout:", e);
+    return res.status(500).json({ error: "OpenAI API-fout", detail: e?.message });
   }
 }
