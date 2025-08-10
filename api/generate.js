@@ -1,3 +1,4 @@
+// generate.js
 import { OpenAI } from "openai";
 
 export const config = {
@@ -13,45 +14,28 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  let profiel = req.body.profiel;
+  let bodyData = req.body;
 
-  // 1️⃣ Als de body als string is aangekomen (soms doet Glide dat)
-  if (!profiel && typeof req.body === "string") {
+  // ✅ FIX: Glide stuurt soms JSON als string (met extra quotes/escapes)
+  if (typeof bodyData === "string") {
     try {
-      const parsedBody = JSON.parse(req.body);
-      profiel = parsedBody.profiel;
+      bodyData = JSON.parse(bodyData);
     } catch (e) {
-      console.warn("Kon body niet parsen als JSON-string:", e);
+      console.error("Kon body niet parsen:", e);
+      return res.status(400).json({ error: "Ongeldige JSON string", received: req.body });
     }
   }
 
-  // 2️⃣ Als de body maar één veld heeft (bijvoorbeeld {"{profieltekst}":""})
-  if (!profiel && typeof req.body === "object" && Object.keys(req.body).length === 1) {
-    const firstValue = Object.values(req.body)[0];
-    if (typeof firstValue === "string" && firstValue.trim() !== "") {
-      profiel = firstValue;
-    }
+  let profiel = bodyData.profiel;
+
+  if (typeof profiel !== "string" || profiel.trim() === "") {
+    return res.status(400).json({ error: "Ongeldig of ontbrekend profiel.", received: bodyData });
   }
 
-  // 3️⃣ Als het profiel een JSON-string is met omringende quotes
-  if (typeof profiel === "string") {
-    if (profiel.startsWith('"') && profiel.endsWith('"')) {
-      profiel = profiel.slice(1, -1);
-    }
-    // Vervang escaped quotes en newline escapes
-    profiel = profiel.replace(/\\"/g, '"').replace(/\\n/g, "\n");
-  }
+  // ✅ Schoon de tekst op
+  profiel = profiel.replace(/\\"/g, '"').replace(/\\n/g, '\n');
 
-  // 4️⃣ Laat zien wat we hebben ontvangen (handig voor debuggen)
-  console.log("Profiel ontvangen:", profiel?.substring(0, 100) + "...");
-
-  // 5️⃣ Stop als we echt niets bruikbaars hebben
-  if (!profiel || typeof profiel !== "string" || profiel.trim() === "") {
-    return res.status(400).json({ 
-      error: "Ongeldig of ontbrekend profiel.", 
-      received: req.body 
-    });
-  }
+  console.log("Profiel ontvangen:", profiel.substring(0, 80) + "...");
 
   const prompt = `
 Je bent een technisch recruiter bij YaWorks. Analyseer dit profiel:
@@ -69,7 +53,8 @@ Geef output in JSON met de volgende velden:
 - samenvatting (1 zin)
 - bericht (max 6 regels, eindigend op: Laat maar weten als je benieuwd bent hoe dat er voor jou uitziet. Kijk anders even op www.yaworkscareers.com.)
 
-Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
+Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.
+`;
 
   try {
     const chatResponse = await openai.chat.completions.create({
@@ -79,7 +64,7 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
         { role: "user", content: prompt }
       ],
       temperature: 0.4,
-      max_output_tokens: 500
+      max_tokens: 500 // veilig hoog genoeg voor JSON output
     });
 
     const content = chatResponse.choices[0].message.content;
@@ -88,6 +73,7 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
       const parsed = JSON.parse(content);
       return res.status(200).json(parsed);
     } catch (jsonError) {
+      console.error("Kon JSON niet parsen:", jsonError, "Content ontvangen:", content);
       return res.status(500).json({ error: "Kon JSON niet parsen", content });
     }
   } catch (apiError) {
