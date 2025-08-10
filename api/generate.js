@@ -1,4 +1,3 @@
-// generate.js
 import { OpenAI } from "openai";
 
 export const config = {
@@ -14,28 +13,24 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  let bodyData = req.body;
+  // Log de raw body om te zien wat Glide daadwerkelijk stuurt
+  console.log("Raw body ontvangen:", req.body);
 
-  // ✅ FIX: Glide stuurt soms JSON als string (met extra quotes/escapes)
+  // Glide kan de body soms als string sturen
+  let bodyData = req.body;
   if (typeof bodyData === "string") {
     try {
       bodyData = JSON.parse(bodyData);
-    } catch (e) {
-      console.error("Kon body niet parsen:", e);
-      return res.status(400).json({ error: "Ongeldige JSON string", received: req.body });
+    } catch (err) {
+      return res.status(400).json({ error: "Body is geen geldige JSON string" });
     }
   }
 
-  let profiel = bodyData.profiel;
+  const { profiel } = bodyData;
 
-  if (typeof profiel !== "string" || profiel.trim() === "") {
-    return res.status(400).json({ error: "Ongeldig of ontbrekend profiel.", received: bodyData });
+  if (!profiel || typeof profiel !== "string") {
+    return res.status(400).json({ error: "Ongeldig of ontbrekend profiel." });
   }
-
-  // ✅ Schoon de tekst op
-  profiel = profiel.replace(/\\"/g, '"').replace(/\\n/g, '\n');
-
-  console.log("Profiel ontvangen:", profiel.substring(0, 80) + "...");
 
   const prompt = `
 Je bent een technisch recruiter bij YaWorks. Analyseer dit profiel:
@@ -53,8 +48,7 @@ Geef output in JSON met de volgende velden:
 - samenvatting (1 zin)
 - bericht (max 6 regels, eindigend op: Laat maar weten als je benieuwd bent hoe dat er voor jou uitziet. Kijk anders even op www.yaworkscareers.com.)
 
-Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.
-`;
+Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
 
   try {
     const chatResponse = await openai.chat.completions.create({
@@ -63,8 +57,7 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.
         { role: "system", content: "Je bent een technische recruiter bij YaWorks." },
         { role: "user", content: prompt }
       ],
-      temperature: 0.4,
-      max_tokens: 500 // veilig hoog genoeg voor JSON output
+      temperature: 0.4
     });
 
     const content = chatResponse.choices[0].message.content;
@@ -73,7 +66,6 @@ Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.
       const parsed = JSON.parse(content);
       return res.status(200).json(parsed);
     } catch (jsonError) {
-      console.error("Kon JSON niet parsen:", jsonError, "Content ontvangen:", content);
       return res.status(500).json({ error: "Kon JSON niet parsen", content });
     }
   } catch (apiError) {
