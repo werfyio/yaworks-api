@@ -1,75 +1,90 @@
-import { OpenAI } from "openai";
-
-export const config = {
-  api: {
-    bodyParser: true,
-  },
-};
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  // Log de raw body om te zien wat Glide daadwerkelijk stuurt
-  console.log("Raw body ontvangen:", req.body);
+  // Debug switch
+  const debug = req.query?.debug === "1" || req.headers["x-debug"] === "1";
 
-  // Glide kan de body soms als string sturen
+  // Log raw body
+  console.log("Raw body ontvangen (type):", typeof req.body);
+  console.log("Raw body ontvangen (waarde):", req.body);
+
   let bodyData = req.body;
+
+  // Als body een string is, probeer hem te parsen
   if (typeof bodyData === "string") {
     try {
       bodyData = JSON.parse(bodyData);
     } catch (err) {
-      return res.status(400).json({ error: "Body is geen geldige JSON string" });
+      console.log("Kon body niet parsen als JSON:", err.message);
     }
   }
 
-  const { profiel } = bodyData;
-
-  if (!profiel || typeof profiel !== "string") {
-    return res.status(400).json({ error: "Ongeldig of ontbrekend profiel." });
+  // Debug response teruggeven
+  if (debug) {
+    return res.status(200).json({
+      debug: true,
+      typeof_body: typeof bodyData,
+      received_body: bodyData,
+      headers: req.headers,
+    });
   }
 
-  const prompt = `
-Je bent een technisch recruiter bij YaWorks. Analyseer dit profiel:
+  // Extract profiel
+  const profiel = bodyData?.profiel;
 
-"""
-${profiel}
-"""
-
-Geef output in JSON met de volgende velden:
-- voornaam
-- achternaam
-- profieltype (zoals Engineer, Architect, Automation, etc.)
-- persoonlijkheid (3 woorden)
-- skills (comma separated)
-- samenvatting (1 zin)
-- bericht (max 6 regels, eindigend op: Laat maar weten als je benieuwd bent hoe dat er voor jou uitziet. Kijk anders even op www.yaworkscareers.com.)
-
-Beantwoord alleen in geldig JSON-formaat, zonder extra uitleg.`;
+  if (!profiel || typeof profiel !== "string" || !profiel.trim()) {
+    return res.status(400).json({
+      error: "Ongeldig of ontbrekend profiel.",
+      typeof_body: typeof bodyData,
+      received_body: bodyData,
+    });
+  }
 
   try {
-    const chatResponse = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Je bent een technische recruiter bij YaWorks." },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0.4
+    // ===== OpenAI API aanroepen =====
+    const completion = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: "Je bent een assistent die profielen analyseert.",
+          },
+          {
+            role: "user",
+            content: profiel,
+          },
+        ],
+        max_tokens: 300,
+        temperature: 0.3,
+      }),
     });
 
-    const content = chatResponse.choices[0].message.content;
+    const completionData = await completion.json();
 
-    try {
-      const parsed = JSON.parse(content);
-      return res.status(200).json(parsed);
-    } catch (jsonError) {
-      return res.status(500).json({ error: "Kon JSON niet parsen", content });
+    if (!completion.ok) {
+      console.error("OpenAI API-fout:", completionData);
+      return res.status(500).json({
+        error: "OpenAI API-fout",
+        detail: completionData,
+      });
     }
-  } catch (apiError) {
-    console.error("OpenAI fout:", apiError);
-    return res.status(500).json({ error: "OpenAI API-fout", detail: apiError.message });
+
+    const text = completionData.choices[0]?.message?.content || "";
+
+    res.status(200).json({
+      ok: true,
+      text,
+    });
+  } catch (err) {
+    console.error("Serverfout:", err);
+    res.status(500).json({ error: "Serverfout", detail: err.message });
   }
 }
