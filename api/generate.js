@@ -1,3 +1,5 @@
+console.log("Ontvangen profiel:", profiel);
+
 // pages/api/generate.js
 import OpenAI from "openai";
 
