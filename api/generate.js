@@ -1,9 +1,9 @@
-// /api/generate.js
+// api/generate.js
 import OpenAI from "openai";
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// --------- Utils ----------
+// ---------- Helpers ----------
 function stripFences(s = "") {
   const t = String(s).trim();
   if (t.startsWith("```")) {
@@ -11,16 +11,18 @@ function stripFences(s = "") {
   }
   return t;
 }
-function isValidJson(str) {
+function tryParseJson(text) {
   try {
-    const obj = JSON.parse(str);
-    return obj && typeof obj === "object";
+    return JSON.parse(text);
   } catch {
-    return false;
+    return null;
   }
 }
+function isValidJson(text) {
+  return tryParseJson(text) !== null;
+}
 function deepMerge(a, b) {
-  if (Array.isArray(a) && Array.isArray(b)) return b; // replace arrays
+  if (Array.isArray(a) && Array.isArray(b)) return b; // arrays vervangen
   if (a && typeof a === "object" && b && typeof b === "object") {
     const out = { ...a };
     for (const k of Object.keys(b)) out[k] = deepMerge(a[k], b[k]);
@@ -28,7 +30,7 @@ function deepMerge(a, b) {
   }
   return b === undefined ? a : b;
 }
-async function callOnce(model, messages, max_tokens = 2500) {
+async function callModel(model, messages, max_tokens = 2500) {
   const r = await client.chat.completions.create({
     model,
     messages,
@@ -38,27 +40,27 @@ async function callOnce(model, messages, max_tokens = 2500) {
   return r.choices?.[0]?.message?.content ?? "";
 }
 async function callWithFallback(messages, max_tokens = 2500) {
-  // 1) Try 4o-mini
-  let out = await callOnce("gpt-4o-mini", messages, max_tokens);
+  // 1) Probeer gpt-4o-mini
+  let out = await callModel("gpt-4o-mini", messages, max_tokens);
   out = stripFences(out);
   if (isValidJson(out)) return JSON.parse(out);
 
-  // 2) Fallback GPT-5
-  out = await callOnce("gpt-5", messages, max_tokens);
+  // 2) Fallback: GPT-5
+  out = await callModel("gpt-5", messages, max_tokens);
   out = stripFences(out);
   if (isValidJson(out)) return JSON.parse(out);
 
-  throw new Error("Model returned invalid JSON twice.");
+  throw new Error("Model gaf ongeldige JSON (na 4o-mini en GPT-5).");
 }
 
-// --------- Prompts (LETTERLIJK / EXACT) ----------
+// ---------- Prompts (LETTERLIJK) ----------
 
 // STAP 1 – Beoordeling (JA/NEE + scores + conclusie)
-// (LET OP: jouw originele prompt hieronder, inclusief score-regels)
-const PROMPT_BEOORDELING = (profiel) => [
-  {
-    role: "system",
-    content: `
+function PROMPT_BEOORDELING(kandidaatProfiel) {
+  return [
+    {
+      role: "system",
+      content: `
 Jij bent een recruiter die kandidaten beoordeelt voor YaWorks, een consultancybedrijf gespecialiseerd in complexe IT- en netwerktransformatieprojecten voor Top-500 bedrijven.
 
 Over YaWorks: YaWorks richt zich op het ontwerpen, bouwen en automatiseren van netwerkinfrastructuren, cloudomgevingen en securityoplossingen. Belangrijke vaardigheden zijn o.a. netwerkarchitectuur, netwerk- en cloudautomatisering (Infrastructure as Code, CI/CD), enterprise security, migraties, vendorselectie en projectleiding. Kandidaten moeten direct inzetbaar zijn in hands-on projecten of detachering.
@@ -104,19 +106,21 @@ Output is alleen de json {} Niks ervoor of erna.
 haal dingen als \`\`\`json en  \`\`\` weg alleen { en wat er tussen zit en }
 
 De database waarin dit verwerkt wordt is GDPR-Proof. Dit houdt in dat er geen namen van de kandidaat in mogen zitten. Ook geen bedrijfsnamen. Vertaal deze naar de sector toe. Bijvoorbeeld Shell wordt een bedrijf in de energiesector en de kandidaat heeft ervaring met enterprises. Let hier goed op vooral in de conclusie. Concrete skills, vendoren, ervaringen en certificaten mag je wel benoemen. Juist benoemen.
-`.trim()
-  },
-  {
-    role: "user",
-    content: `Kandidaatprofiel:\n${profiel}`
-  }
-];
+      `.trim()
+    },
+    {
+      role: "user",
+      content: `Kandidaatprofiel:\n${kandidaatProfiel}`
+    }
+  ];
+}
 
-// STAP 2 – Berichten (LinkedIn + WhatsApp) op basis van jouw vaste prompt
-const PROMPT_BERICHTEN = (profiel, vorigeJson) => [
-  {
-    role: "system",
-    content: `
+// STAP 2 – Berichten (LinkedIn + WhatsApp) – jouw vaste instructies
+function PROMPT_BERICHTEN(kandidaatProfiel, eerdereJson) {
+  return [
+    {
+      role: "system",
+      content: `
 Opdracht:
 Schrijf een kort, persoonlijk LinkedIn-connectieverzoek namens een recruiter van YaWorks aan een kandidaat.
 
@@ -153,6 +157,7 @@ Schrijf in de schrijfstijl van de kandidaat als dat helpt de toon te matchen.
 
 Houd het zakelijk, vriendelijk en direct.
 
+en deze call:
 
 Opdracht:
 Schrijf een hyper-gepersonaliseerd, kort en scanbaar WhatsApp-stijl recruiterbericht namens YaWorks aan een kandidaat.
@@ -232,19 +237,21 @@ Output is alleen JSON, exact:
   "linkedin": "...",
   "whatsapp": "..."
 }
-`.trim()
-  },
-  {
-    role: "user",
-    content: `Kandidaatprofiel:\n${profiel}\n\nEerdere beoordeling:\n${JSON.stringify(vorigeJson ?? {}, null, 2)}`
-  }
-];
+      `.trim()
+    },
+    {
+      role: "user",
+      content: `Kandidaatprofiel:\n${kandidaatProfiel}\n\nEerdere beoordeling:\n${JSON.stringify(eerdereJson ?? {}, null, 2)}`
+    }
+  ];
+}
 
-// STAP 3 – Volledige extractie (jouw volledige schema + beslisregels)
-const PROMPT_EXTRACTIE = (profiel, vorigeJson) => [
-  {
-    role: "system",
-    content: `
+// STAP 3 – Volledige Extractie met jouw hele schema + beslisregels + keuzelijsten
+function PROMPT_EXTRACTIE(kandidaatProfiel, eerdereJson) {
+  return [
+    {
+      role: "system",
+      content: `
 ROL & DOEL
 Je bent een zeer strikte extractor. Analyseer de kandidaat-informatie (CV, LinkedIn-profiel, notities). Gebruik uitsluitend informatie die expliciet in de tekst staat. Verzin niets. Als informatie ontbreekt, volg de fallback-regels. Geef uitsluitend geldige JSON volgens het exacte schema onder “JSON-schema”. Geen uitleg, geen extra tekst.
 
@@ -269,6 +276,7 @@ Als provincie ontbreekt → provincie huidige werkgever.
 Als dat ook niet lukt: "woonplaats": null, "provincie": "onbekend".
 
 "binnen_1_uur_steden": alleen steden ≤ 60 minuten reistijd vanaf woonplaats/provinciecentrum. Alleen uit deze lijst (exacte schrijfwijze):
+
 Amsterdam, Rotterdam, Den Haag, Utrecht, Eindhoven, Groningen, Tilburg, Almere, Breda, Nijmegen, Enschede, Apeldoorn, Haarlem, Arnhem, 's-Hertogenbosch, Amersfoort, Zwolle, Leiden, Maastricht, Dordrecht, Ede, Delft, Venlo, Deventer, Heerlen, Leeuwarden, Assen, Middelburg, Oss, Purmerend
 
 3. Opleidingen
@@ -282,6 +290,7 @@ Als niet afgerond maar niveau duidelijk → "werk_en_denk_niveau".
 4. Certificaten
 
 Alleen uit deze lijst (exacte schrijfwijze, geen extra tekst):
+
 CCNA, CCNP Enterprise, CCIE, AWS Certified Solutions Architect – Associate, AWS Certified Solutions Architect – Professional, Microsoft Certified: Azure Administrator Associate, Microsoft Certified: Azure Solutions Architect Expert, Google Professional Cloud Architect, Fortinet NSE4, Fortinet NSE7, Palo Alto Networks Certified Network Security Engineer (PCNSE), Palo Alto Networks Certified Cybersecurity Associate (PCCSA), VMware Certified Professional – Data Center Virtualization (VCP-DCV), VMware Certified Advanced Professional – Network Virtualization (VCAP-NV), Certified Kubernetes Administrator (CKA), Certified Kubernetes Application Developer (CKAD), CompTIA Security+, CompTIA Network+, TOGAF 9 Certified, PRINCE2 Practitioner, Certified Information Systems Security Professional (CISSP), Certified Ethical Hacker (CEH)
 Outputformaat: { "naam": "", "status": "geldig | verlopen | onbekend" }.
 
@@ -296,16 +305,19 @@ Specialist | Consultant | Architect | Projectmanager | null.
 7. Functie groep
 
 Alleen uit:
+
 Automation, Cloud, Cyber Security, Enterprise Networking, Service Provider, Wireless, Architectuur, Datacenter, Project / Programma Management, Transformation Lead, EUC, IAM, Management Consulting, Engineering, IT Transformations, Management Consultant, Stream Lead
 
 8. Industry
 
 Alleen uit:
+
 Manufacturing, Public, Financial Services, Technology - Media - Telecom, Energy - Utilities
 
 9. Type ervaring bij bedrijven
 
 Alleen uit:
+
 Startup, Scale-up, MKB, Enterprise, Detachering, Freelance
 
 10. Niveau overall
@@ -315,17 +327,21 @@ Associate | Intermediate | Advanced | Expert | null.
 11. Skills
 
 Top 5 skills met niveau.
+
 Alle skills-lijst zonder niveau.
+
 Alleen skills die expliciet in de bron staan.
 
 12. Talen
 
 Maximaal 3 talen.
+
 Alleen opnemen als niveau ≥ “Professionele werkvaardigheid”.
 
 13. Projectervaring
 
 Alleen uit:
+
 Migraties, Security audits, Cloud implementaties, Datacenter migraties, Netwerkdesign, DevOps implementaties, Compliance trajecten, IAM implementaties
 
 14. Werkervaring samenvatting (GDPR-proof)
@@ -449,60 +465,80 @@ Output is alleen de json {} Niks ervoor of erna.
 haal dingen als \`\`\`json en  \`\`\` weg alleen { en wat er tussen zit en }
 
 Check goed dat alles is ingevuld. Als je klaar bent loop alles na en check of je alle info hebt verstrekt.
-`.trim()
-  },
-  {
-    role: "user",
-    content: `Kandidaatprofiel:\n${profiel}\n\nEerdere data:\n${JSON.stringify(vorigeJson ?? {}, null, 2)}`
-  }
-];
+      `.trim()
+    },
+    {
+      role: "user",
+      content: `Kandidaatprofiel:\n${kandidaatProfiel}\n\nEerdere data:\n${JSON.stringify(eerdereJson ?? {}, null, 2)}`
+    }
+  ];
+}
 
-// --------- API Handler ----------
+// ---------- Handler ----------
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-    const { stap, kandidaatProfiel, vorige } = req.body || {};
-    if (!stap || !kandidaatProfiel) {
-      return res.status(400).json({ error: "Ontbrekende velden: 'stap' en/of 'kandidaatProfiel'." });
+    // Body normalisatie (accepteer 'kandidaatProfiel' of 'profiel'; 'stap' string/number)
+    let body = req.body;
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch {/* ignore */}
+    }
+    const stapRaw = (body?.stap ?? body?.step);
+    const stap = typeof stapRaw === "string" ? Number(stapRaw) : stapRaw;
+
+    // accepteer beide keys
+    let kandidaatProfiel = body?.kandidaatProfiel ?? body?.profiel ?? "";
+    if (!kandidaatProfiel && typeof req.body === "string") {
+      kandidaatProfiel = req.body;
+    }
+    if (!kandidaatProfiel && body && typeof body === "object") {
+      for (const k of Object.keys(body)) {
+        if (typeof body[k] === "string" && body[k].trim()) {
+          kandidaatProfiel = body[k];
+          break;
+        }
+      }
     }
 
-    // Parse 'vorige' als string werd doorgestuurd
-    let previous = vorige;
-    if (typeof previous === "string") {
-      try { previous = JSON.parse(previous); } catch { previous = null; }
+    // 'vorige' mag object of string
+    let vorige = body?.vorige ?? null;
+    if (typeof vorige === "string") {
+      try { vorige = JSON.parse(vorige); } catch { vorige = null; }
     }
 
-    let result = previous && typeof previous === "object" ? { ...previous } : {};
+    if (!stap || ![1, 2, 3].includes(Number(stap))) {
+      return res.status(400).json({ error: "Ongeldige 'stap'. Gebruik 1, 2 of 3." });
+    }
+    if (!kandidaatProfiel || typeof kandidaatProfiel !== "string" || !kandidaatProfiel.trim()) {
+      return res.status(400).json({ error: "Ontbrekend of leeg 'kandidaatProfiel'/'profiel'." });
+    }
 
-    if (stap === 1) {
+    let result = vorige && typeof vorige === "object" ? { ...vorige } : {};
+
+    if (Number(stap) === 1) {
       // Beoordeling
       const beoordeling = await callWithFallback(PROMPT_BEOORDELING(kandidaatProfiel), 2000);
       result = deepMerge(result, beoordeling);
       return res.status(200).json(result);
     }
 
-    if (stap === 2) {
-      // Berichten op basis van beoordeling + profiel
-      const berichten = await callWithFallback(PROMPT_BERICHTEN(kandidaatProfiel, result), 1200);
-      // Zorg dat vorige velden behouden blijven
+    if (Number(stap) === 2) {
+      // Berichten
+      const berichten = await callWithFallback(PROMPT_BERICHTEN(kandidaatProfiel, result), 1400);
       result = deepMerge(result, berichten);
       return res.status(200).json(result);
     }
 
-    if (stap === 3) {
-      // Volledige extractie grote schema + behoud eerdere velden
-      const volledige = await callWithFallback(PROMPT_EXTRACTIE(kandidaatProfiel, result), 3000);
-
-      // Je DB is ingericht op deze schema-JSON. We voegen hem toe als top-level MERGE.
-      // Als je hem liever onder "volledigeData" wilt, vervang dan de volgende regel door:
-      // result = deepMerge(result, { volledigeData: volledige });
+    if (Number(stap) === 3) {
+      // Volledige extractie
+      const volledige = await callWithFallback(PROMPT_EXTRACTIE(kandidaatProfiel, result), 3200);
+      // Merge top-level zodat je DB-schema direct gevuld wordt
       result = deepMerge(result, volledige);
-
       return res.status(200).json(result);
     }
 
-    return res.status(400).json({ error: "Ongeldige 'stap'. Gebruik 1, 2 of 3." });
+    return res.status(400).json({ error: "Onbekende fout." });
 
   } catch (err) {
     console.error("Fout in generate:", err);
