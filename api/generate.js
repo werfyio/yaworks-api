@@ -1,48 +1,141 @@
-// pages/api/generate.js
-import { OpenAI } from "openai";
+import OpenAI from "openai";
+const client = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-export const config = {
-  api: {
-    bodyParser: true,
-  },
-};
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
-  let bodyData = req.body;
-
-  if (typeof bodyData === "string") {
-    try {
-      bodyData = JSON.parse(bodyData);
-    } catch {
-      // laat hem als string staan
-    }
-  }
-
-  const profiel = bodyData?.profiel;
-
-  if (!profiel || typeof profiel !== "string" || !profiel.trim()) {
-    return res.status(400).json({
-      error: "Ongeldig of ontbrekend profiel.",
-    });
-  }
-
-  // === Lange prompt voor strikte JSON extractie ===
+// 1️⃣ Matchcheck – JA/NEE + scores
+export async function matchCheck(profiel) {
   const prompt = `
-ROL & DOEL
-Je bent een zeer strikte extractor. Analyseer de kandidaat-informatie (CV, LinkedIn-profiel, notities). Gebruik uitsluitend informatie die expliciet in de tekst staat. Verzin niets. Als informatie ontbreekt, volg de fallback-regels. Geef uitsluitend geldige JSON volgens het exacte schema onder “JSON-schema”. Geen uitleg, geen extra tekst.
+Jij bent een recruiter die kandidaten beoordeelt voor YaWorks, een consultancybedrijf gespecialiseerd in complexe IT- en netwerktransformatieprojecten voor Top-500 bedrijven.
 
-GDPR-regel: Nooit bedrijfsnamen opnemen; gebruik generieke omschrijvingen zoals “grote telecomprovider” of “publieke sectororganisatie”.
+Over YaWorks:
+YaWorks richt zich op het ontwerpen, bouwen en automatiseren van netwerkinfrastructuren, cloudomgevingen en securityoplossingen. Belangrijke vaardigheden: netwerkarchitectuur, netwerk- en cloudautomatisering (Infrastructure as Code, CI/CD), enterprise security, migraties, vendorselectie, projectleiding.
 
-${/* Hier volgen je volledige beslisregels */""}
+Opdracht:
+Analyseer het volledige kandidatenprofiel dat ik geef. Geef scores (0–5, halve punten toegestaan) voor onderstaande criteria, met een korte toelichting.
 
-JSON-SCHEMA
+Criteria:
+- Technische expertise – Beoordeel kennis en certificeringen in netwerken, cloud, security en automatisering.
+- Relevantie voor YaWorks-profielen – Match met rollen zoals automation consultant, netwerkengineer in enterprise omgevingen, cloudtransformatieprojecten.
+- Hands-on inzetbaarheid – Hoe snel kan de kandidaat waarde leveren in een project.
+- Enterprise & projectervaring – Ervaring in grote, complexe, multi-vendor of Top-500 enterprise omgevingen.
+- Soft skills & klantgerichtheid – Communicatieve vaardigheden, samenwerking, klantinteractie.
+
+Tel de scores op en bereken een totaalscore op 25.
+
+Aanschrijven (JA/NEE) – JA als totaalscore ≥ 17 én de kandidaat Nederlands kan (afleiden uit werkervaring, opleiding, of andere duidelijke signalen).  
+Bij twijfel onder 80% zekerheid → "NEE".
+
+Output JSON (geen extra tekst, geen \`\`\`):
 {
+  "criteria": [
+    { "naam": "Technische expertise", "score": X, "toelichting": "..." },
+    { "naam": "Relevantie voor Yaworks-profielen", "score": X, "toelichting": "..." },
+    { "naam": "Hands-on inzetbaarheid", "score": X, "toelichting": "..." },
+    { "naam": "Enterprise & projectervaring", "score": X, "toelichting": "..." },
+    { "naam": "Soft skills & klantgerichtheid", "score": X, "toelichting": "..." }
+  ],
+  "totaalscore": X,
+  "nederlands": "JA of NEE",
+  "aanschrijven": "JA of NEE",
+  "conclusie": "Max 500 tekens, GDPR-proof, geen namen/bedrijven."
+}
+
+Kandidaatprofiel:
+${profiel}
+`;
+
+  const completion = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: prompt,
+    temperature: 0.2,
+    max_output_tokens: 1000,
+  });
+
+  return completion.output_text;
+}
+
+// 2️⃣ LinkedIn connectieverzoek
+export async function linkedinMessage(profielJson, naamKandidaat, recruiterNaam) {
+  const prompt = `
+Opdracht:
+Schrijf een kort, persoonlijk LinkedIn-connectieverzoek namens een recruiter van YaWorks aan een kandidaat.
+
+Gebruik deze info uit JSON:
+${JSON.stringify(profielJson)}
+
+Vaste opbouw:
+Hé [Naam],  
+
+Jouw ervaring heeft veel overlap tussen jouw [certificeringen/ervaring] in [toptechnologieën] en onze [relevante projecten] bij YaWorks.  
+
+Lijkt me leuk om te connecten!  
+
+MvG  
+[Recruiternaam]
+
+Vul automatisch in op basis van de JSON. Max 270 tekens. Zakelijk, vriendelijk, direct.
+
+Uitvoer alleen de tekst, geen JSON.
+`;
+
+  const completion = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: prompt
+      .replace("[Naam]", naamKandidaat)
+      .replace("[Recruiternaam]", recruiterNaam),
+    temperature: 0.4,
+    max_output_tokens: 300,
+  });
+
+  return completion.output_text;
+}
+
+// 3️⃣ WhatsApp-stijl bericht
+export async function whatsappMessage(profielJson, naamKandidaat) {
+  const prompt = `
+Opdracht:
+Schrijf een hyper-gepersonaliseerd, kort en scanbaar WhatsApp-stijl recruiterbericht namens YaWorks.
+
+Gebruik deze info uit JSON:
+${JSON.stringify(profielJson)}
+
+Hé [Naam], [persoonlijke openingszin]  
+
+[Zin over certificeringen en skills]  
+[Zin over match met YaWorks-projecten]  
+
+[Zin over type projecten en omgeving bij YaWorks]  
+[Zin waarin ambitie van kandidaat verbonden wordt aan YaWorks-mogelijkheden]  
+
+Als je dat interessant vindt, vertel ik je graag meer.
+
+Houd het compact (4–6 regels), scanbaar, geen marketingjargon, schrijfstijl matchen aan kandidaat.
+`;
+
+  const completion = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: prompt.replace("[Naam]", naamKandidaat),
+    temperature: 0.4,
+    max_output_tokens: 500,
+  });
+
+  return completion.output_text;
+}
+
+// 4️⃣ Volledige JSON-extractor (GDPR-proof)
+export async function fullProfileExtractor(profiel) {
+  const prompt = `
+ROL & DOEL:
+Je bent een zeer strikte extractor. Gebruik alleen expliciete info uit het profiel.  
+Geen gokwerk onder 80% zekerheid — alleen invullen als je met ≥80% zekerheid kunt afleiden.  
+Als ≥80% zekerheid, mag je op basis van context afleiden (bijv. kandidaat werkt al jaren in Nederland → Nederlands = JA).
+
+GDPR-regel:
+Nooit bedrijfsnamen opnemen; gebruik generieke omschrijvingen.
+
+JSON-SCHEMA:
+${`{
   "schema_version": "2025-08-F2F3",
   "dienstverband": "",
   "werkgebied": {
@@ -126,44 +219,41 @@ JSON-SCHEMA
   "impact_highlights": [],
   "preferred_tech_focus": [],
   "persoonlijke_usp": ""
-}
+}`}
 
 Kandidaatprofiel:
 ${profiel}
 
-LET OP:
-Output is alleen de json {} Niks ervoor of erna.
-Haal dingen als \`\`\`json en  \`\`\` weg, alleen { en wat er tussen zit en }.
-Check goed dat alles is ingevuld. Als je klaar bent loop alles na en check of je alle info hebt verstrekt.
-`.trim();
+Output: Alleen de JSON, geen extra tekst.
+`;
 
-  try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: "Je bent een strikte JSON-profiel extractor." },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.3,
-      max_tokens: 2000,
-    });
+  const completion = await client.responses.create({
+    model: "gpt-4o-mini",
+    input: prompt,
+    temperature: 0.1,
+    max_output_tokens: 4000,
+  });
 
-    const raw = completion.choices?.[0]?.message?.content ?? "";
+  return completion.output_text;
+}
 
-    // Strip eventueel code fences
-    const cleaned = raw.replace(/```json|```/g, "").trim();
+// 5️⃣ Flow
+export async function generate(profiel, naamKandidaat, recruiterNaam) {
+  const match = await matchCheck(profiel);
+  const matchData = JSON.parse(match);
 
-    // Probeer JSON te parsen, anders stuur tekst terug
-    try {
-      const parsed = JSON.parse(cleaned);
-      return res.status(200).json(parsed);
-    } catch {
-      return res.status(200).json({ ok: true, text: cleaned });
-    }
-  } catch (err) {
-    return res.status(500).json({
-      error: "OpenAI API-fout",
-      detail: err?.message || String(err),
-    });
+  if (matchData.aanschrijven === "NEE") {
+    return { match: matchData, linkedin: null, whatsapp: null, fullJson: null };
   }
+
+  const linkedin = await linkedinMessage(matchData, naamKandidaat, recruiterNaam);
+  const whatsapp = await whatsappMessage(matchData, naamKandidaat);
+  const fullJson = await fullProfileExtractor(profiel);
+
+  return {
+    match: matchData,
+    linkedin,
+    whatsapp,
+    fullJson: JSON.parse(fullJson),
+  };
 }
